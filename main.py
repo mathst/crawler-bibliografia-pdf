@@ -2,8 +2,9 @@ import asyncio
 import random
 import os
 import logging
-from urllib.parse import quote_plus
-from typing import Callable, Optional
+import hashlib
+from urllib.parse import quote_plus, urlparse
+from typing import Callable, Optional, Set
 from playwright.async_api import async_playwright
 from playwright_stealth.stealth import Stealth
 from fake_useragent import UserAgent
@@ -19,11 +20,15 @@ UA = UserAgent()
 DOWNLOAD_DIR = "bibliografia_pdf"
 MIN_PAGINAS = 50
 
+# Cache global de URLs já testadas (evita testar mesmo PDF 2x)
+urls_testadas: Set[str] = set()
+hashes_pdfs: Set[str] = set()  # Evita baixar PDFs duplicados
+
 # Níveis de busca: define quantos links PDF tentar
 NIVEIS_BUSCA = {
-    "rapido": 2,      # Apenas os 2 primeiros PDFs
-    "moderado": 4,    # Até 4 PDFs
-    "completo": 6,    # Até 6 PDFs
+    "rapido": 5,      # Testa 5 PDFs por query
+    "moderado": 15,   # Testa 15 PDFs por query
+    "completo": 999,  # Testa TODOS os PDFs encontrados (busca exaustiva)
 }
 
 LISTA_LIVROS_PADRAO = []
@@ -42,38 +47,169 @@ async def configurar_navegador(p):
     return browser, page
 
 
-async def encontrar_links_pdf(page, nivel: str = "moderado") -> list[str]:
-    """Extrai todos os links PDF únicos dos resultados do Bing."""
+def calcular_hash_pdf(caminho: str) -> str:
+    """Calcula hash MD5 do PDF para detectar duplicatas."""
+    try:
+        with open(caminho, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    except:
+        return ""
+
+
+def normalizar_url(url: str) -> str:
+    """Normaliza URL para comparação (remove query params variáveis)."""
+    parsed = urlparse(url)
+    # Remove parâmetros de sessão/tracking comuns
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+async def encontrar_links_pdf(page, nivel: str = "moderado", motor: str = "bing") -> list[str]:
+    """Extrai todos os links PDF únicos dos resultados do motor de busca."""
+    # Extração mais agressiva de links PDF
     links = await page.evaluate("""() => {
-        return Array.from(document.querySelectorAll('a'))
-            .map(a => a.href)
-            .filter(href => href.match(/\\.pdf(\\?|#|$)/i))
-            .filter(href => href.startsWith('http'))
+        const allLinks = [];
+        
+        // 1. Links diretos para PDF
+        document.querySelectorAll('a').forEach(a => {
+            if (a.href && a.href.match(/\\.pdf(\\?|#|$)/i)) {
+                allLinks.push(a.href);
+            }
+        });
+        
+        // 2. Links em atributos data-* e onclick
+        document.querySelectorAll('[data-url], [data-href], [onclick]').forEach(el => {
+            const dataUrl = el.getAttribute('data-url') || el.getAttribute('data-href');
+            if (dataUrl && dataUrl.match(/\\.pdf/i)) {
+                allLinks.push(dataUrl);
+            }
+        });
+        
+        // 3. Procura por URLs em texto (resultados de busca)
+        const pageText = document.body.innerText;
+        const urlPattern = /https?:\\/\\/[^\\s]+\\.pdf/gi;
+        const matches = pageText.matchAll(urlPattern);
+        for (const match of matches) {
+            allLinks.push(match[0]);
+        }
+        
+        return allLinks.filter(href => href.startsWith('http'));
     }""")
 
-    seen = set()
+    # Remove duplicatas e URLs já testadas
     unicos = []
     for href in links:
-        if href not in seen:
-            seen.add(href)
+        url_norm = normalizar_url(href)
+        if url_norm not in urls_testadas:
+            urls_testadas.add(url_norm)
             unicos.append(href)
     
+    # Prioriza fontes confiáveis
+    def prioridade_fonte(url: str) -> int:
+        url_lower = url.lower()
+        if any(x in url_lower for x in ['academia.edu', 'researchgate', 'scielo']):
+            return 0
+        elif any(x in url_lower for x in ['.edu', '.gov', 'biblioteca', 'repository']):
+            return 1
+        elif any(x in url_lower for x in ['archive.org', 'pdftop']):
+            return 2
+        else:
+            return 3
+    
+    unicos.sort(key=prioridade_fonte)
+    
     # Limita quantidade de links baseado no nível
-    max_links = NIVEIS_BUSCA.get(nivel, 4)
+    max_links = NIVEIS_BUSCA.get(nivel, 6)
     return unicos[:max_links]
 
 
-def validar_pdf(caminho: str) -> bool:
-    """Verifica se o arquivo é um PDF válido com no mínimo MIN_PAGINAS páginas."""
+def validar_pdf(caminho: str, termo_busca: str = "") -> bool:
+    """Verifica se o arquivo é um PDF válido com no mínimo MIN_PAGINAS páginas
+    e se o termo de busca aparece nas primeiras páginas."""
     try:
+        # Verifica duplicatas por hash
+        hash_pdf = calcular_hash_pdf(caminho)
+        if hash_pdf and hash_pdf in hashes_pdfs:
+            log.warning("PDF descartado: duplicata já baixada")
+            return False
+        
         doc = pymupdf.open(caminho)
         num_paginas = len(doc)
-        doc.close()
-        if num_paginas >= MIN_PAGINAS:
-            log.info("PDF válido: %d páginas", num_paginas)
+        
+        # Valida número mínimo de páginas
+        if num_paginas < MIN_PAGINAS:
+            doc.close()
+            log.warning("PDF descartado: apenas %d páginas (mínimo %d)", num_paginas, MIN_PAGINAS)
+            return False
+        
+        # Verifica metadados do PDF (autor/título)
+        metadata = doc.metadata
+        texto_metadata = ""
+        if metadata:
+            texto_metadata = f"{metadata.get('title', '')} {metadata.get('author', '')}".lower()
+        
+        # Valida conteúdo nas primeiras páginas
+        if termo_busca:
+            # Extrai texto das primeiras 10 páginas (capa, contracapa, título, índice)
+            texto_inicial = ""
+            paginas_para_verificar = min(10, num_paginas)
+            for i in range(paginas_para_verificar):
+                texto_inicial += " " + doc[i].get_text().lower()
+            
+            # Adiciona metadados ao texto de validação
+            texto_completo = texto_inicial + " " + texto_metadata
+            doc.close()
+            
+            # Remove acentos para comparação mais flexível
+            import unicodedata
+            def remover_acentos(texto):
+                return ''.join(c for c in unicodedata.normalize('NFD', texto) 
+                              if unicodedata.category(c) != 'Mn')
+            
+            texto_normalizado = remover_acentos(texto_completo)
+            termo_normalizado = remover_acentos(termo_busca.lower())
+            
+            # Separa palavras significativas (>3 caracteres, sem palavras comuns)
+            palavras_ignorar = {'com', 'para', 'sobre', 'uma', 'dos', 'das', 'the', 'and', 'livro', 'ebook', 'pdf'}
+            palavras_termo = [
+                remover_acentos(p.lower()) 
+                for p in termo_busca.split() 
+                if len(p) > 3 and p.lower() not in palavras_ignorar
+            ]
+            
+            if not palavras_termo:
+                # Se não há palavras significativas, aceita
+                if hash_pdf:
+                    hashes_pdfs.add(hash_pdf)
+                log.info("PDF válido: %d páginas", num_paginas)
+                return True
+            
+            # Conta quantas palavras aparecem no texto
+            palavras_encontradas = sum(1 for palavra in palavras_termo if palavra in texto_normalizado)
+            percentual = palavras_encontradas / len(palavras_termo)
+            
+            # VALIDAÇÃO RIGOROSA: Pelo menos 70% das palavras devem estar presentes
+            if percentual < 0.7:
+                log.warning("PDF descartado: conteúdo não corresponde ao termo '%s'", termo_busca)
+                log.warning("Palavras encontradas: %d/%d (%.0f%%)", 
+                           palavras_encontradas, len(palavras_termo), percentual * 100)
+                log.debug("Palavras buscadas: %s", palavras_termo)
+                return False
+            
+            # PDF válido - adiciona hash ao cache
+            if hash_pdf:
+                hashes_pdfs.add(hash_pdf)
+            
+            log.info("PDF válido: %d páginas, %d/%d palavras encontradas (%.0f%%)", 
+                    num_paginas, palavras_encontradas, len(palavras_termo), percentual * 100)
             return True
-        log.warning("PDF descartado: apenas %d páginas (mínimo %d)", num_paginas, MIN_PAGINAS)
-        return False
+        else:
+            doc.close()
+        
+        if hash_pdf:
+            hashes_pdfs.add(hash_pdf)
+        log.info("PDF válido: %d páginas", num_paginas)
+        return True
+        
     except Exception as e:
         log.warning("Arquivo não é um PDF válido: %s", e)
         return False
@@ -94,29 +230,101 @@ async def baixar_pdf(page, url: str, download_path: str) -> bool:
     return False
 
 
-async def tentar_busca(page, query_str: str, download_path: str, nivel: str = "moderado") -> bool:
+async def tentar_busca(page, query_str: str, download_path: str, termo_original: str, nivel: str = "moderado", motor: str = "bing") -> bool:
     """Executa uma busca e tenta baixar um PDF válido dos resultados."""
-    search_url = f"https://www.bing.com/search?q={quote_plus(query_str)}"
+    # Suporta múltiplos motores de busca
+    motores = {
+        "bing": f"https://www.bing.com/search?q={quote_plus(query_str)}",
+        "duckduckgo": f"https://duckduckgo.com/?q={quote_plus(query_str)}",
+        "google": f"https://www.google.com/search?q={quote_plus(query_str)}",
+    }
+    
+    search_url = motores.get(motor, motores["bing"])
 
-    await page.goto(search_url, wait_until="load", timeout=20000)
-    await asyncio.sleep(random.uniform(2, 4))
-
-    links_pdf = await encontrar_links_pdf(page, nivel)
-    if not links_pdf:
+    try:
+        await page.goto(search_url, wait_until="load", timeout=20000)
+        await asyncio.sleep(random.uniform(2, 4))
+    except Exception as e:
+        log.error("Erro ao acessar motor de busca %s: %s", motor, e)
         return False
 
+    links_pdf = await encontrar_links_pdf(page, nivel, motor)
+    if not links_pdf:
+        log.warning("❌ Nenhum link PDF encontrado com motor %s", motor)
+        return False
+
+    log.info("✅ Encontrados %d links únicos no %s (testando até %d)", 
+             len(links_pdf), motor, NIVEIS_BUSCA.get(nivel, 6))
+
     for i, url_pdf in enumerate(links_pdf):
-        log.info("Tentativa %d/%d: %s", i + 1, len(links_pdf), url_pdf)
+        log.info("Tentativa %d/%d: %s", i + 1, len(links_pdf), url_pdf[:80])
 
         if not await baixar_pdf(page, url_pdf, download_path):
+            await asyncio.sleep(random.uniform(1, 2))  # Evita rate limiting
             continue
 
-        if validar_pdf(download_path):
+        if validar_pdf(download_path, termo_original):
             return True
 
         os.remove(download_path)
+        await asyncio.sleep(random.uniform(0.5, 1.5))
 
     return False
+
+
+def gerar_queries_inteligentes(termo: str) -> list[tuple[str, str]]:
+    """Gera queries otimizadas com múltiplos motores de busca."""
+    # Tenta separar autor e título se possível
+    palavras = termo.split()
+    autor = " ".join(palavras[-2:]) if len(palavras) > 2 else ""
+    titulo = " ".join(palavras[:-2]) if len(palavras) > 2 else termo
+    
+    queries_base = [
+        # Queries exatas
+        (f'"{termo}" filetype:pdf', "bing"),
+        (f'"{termo}" pdf', "google"),
+        (f'"{termo}" pdf download', "duckduckgo"),
+        
+        # Queries com variações
+        (f"livro {termo} filetype:pdf", "google"),
+        (f"{termo} pdf completo", "duckduckgo"),
+        (f"download pdf {termo}", "bing"),
+        (f"{termo} pdf gratis download", "google"),
+        (f"baixar {termo} pdf", "bing"),
+        (f"ebook {termo} pdf", "duckduckgo"),
+        (f"{termo} pdf portugues", "google"),
+        (f"{termo} livro pdf download", "bing"),
+        (f"pdf {termo} completo gratis", "duckduckgo"),
+        (f"{termo} book pdf", "google"),
+        (f"free pdf {termo}", "bing"),
+        
+        # Queries específicas
+        (f"{termo} pdf online", "google"),
+        (f"{termo} epub pdf", "duckduckgo"),
+        (f"download gratis {termo} pdf", "bing"),
+        (f"{termo} pdf ler online", "google"),
+        
+        # Sites específicos
+        (f"{termo} site:archive.org", "google"),
+        (f"{termo} pdf site:academia.edu", "google"),
+        (f"{termo} pdf site:researchgate.net", "google"),
+        (f"{termo} site:scribd.com", "google"),
+        (f"{termo} pdf site:z-lib.org", "google"),
+        (f"{termo} pdf site:libgen", "google"),
+        (f"{termo} site:pdfdrive.com", "google"),
+        
+        # Queries com autor separado (se detectado)
+        (f'{autor} "{titulo}" pdf', "google") if autor else (f"{termo} pdf", "google"),
+        (f'livro {titulo} {autor} pdf', "bing") if autor else (f"livro {termo} pdf", "bing"),
+        
+        # Queries alternativas
+        (f"{termo.replace(' ', '+')} filetype:pdf", "bing"),
+        (f"{termo} pdf free download", "duckduckgo"),
+        (f"{termo} pdf full book", "google"),
+        (f"{termo} complete pdf", "duckduckgo"),
+    ]
+    
+    return queries_base
 
 
 async def buscar_e_baixar(
@@ -132,35 +340,32 @@ async def buscar_e_baixar(
     if callback_progresso:
         callback_progresso(termo, "verificando")
 
-    if os.path.exists(download_path) and validar_pdf(download_path):
+    if os.path.exists(download_path) and validar_pdf(download_path, termo):
         log.info("Já baixado: %s", nome_arquivo)
         if callback_progresso:
             callback_progresso(termo, "sucesso")
         return True
 
-    # Queries otimizadas com palavras-chave variadas
-    queries = [
-        f'"{termo}" filetype:pdf',
-        f"livro {termo} filetype:pdf",
-        f"download pdf {termo}",
-        f"{termo} pdf gratis download",
-        f"baixar {termo} pdf",
-        f"ebook {termo} pdf",
-    ]
+    # Gera queries com múltiplos motores de busca
+    queries = gerar_queries_inteligentes(termo)
 
     try:
-        for q in queries:
-            log.info("Buscando: %s", q)
+        # Tenta com motores diferentes para diversificar resultados
+        for query, motor in queries:
+            log.info("Buscando [%s]: %s", motor.upper(), query[:60])
             if callback_progresso:
                 callback_progresso(termo, "buscando")
             
-            if await tentar_busca(page, q, download_path, nivel):
-                log.info("Download concluído: %s", nome_arquivo)
+            if await tentar_busca(page, query, download_path, termo, nivel, motor):
+                log.info("✅ Download concluído: %s", nome_arquivo)
                 if callback_progresso:
                     callback_progresso(termo, "sucesso")
                 return True
+            
+            # Delay entre queries para evitar bloqueio
+            await asyncio.sleep(random.uniform(2, 4))
 
-        log.warning("Nenhum PDF válido (>%d páginas) para: %s", MIN_PAGINAS, termo)
+        log.warning("❌ Nenhum PDF válido encontrado para: %s", termo)
         if callback_progresso:
             callback_progresso(termo, "falhou")
         return False

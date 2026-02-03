@@ -109,7 +109,7 @@ class BibliografiaCrawlerApp:
                         italic=True
                     ),
                     ft.Text(
-                        "✨ Auto-detecta formato • 6 variações de query • Validação de PDFs",
+                        "✨ 3 motores de busca • Cache inteligente • Validação MD5 • Metadados PDF",
                         size=10,
                         color=ft.Colors.GREEN_600,
                         weight=ft.FontWeight.W_500
@@ -149,17 +149,17 @@ class BibliografiaCrawlerApp:
             content=ft.Row([
                 ft.Radio(
                     value="rapido",
-                    label="🚀 Rápido (2 links)",
+                    label="🚀 Rápido (5 PDFs/query)",
                     label_style=ft.TextStyle(size=14)
                 ),
                 ft.Radio(
                     value="moderado",
-                    label="⚡ Moderado (4 links)",
+                    label="⚡ Moderado (15 PDFs/query)",
                     label_style=ft.TextStyle(size=14)
                 ),
                 ft.Radio(
                     value="completo",
-                    label="🔍 Completo (6 links)",
+                    label="🔍 Completo (TODOS até achar)",
                     label_style=ft.TextStyle(size=14)
                 ),
             ], spacing=20, alignment=ft.MainAxisAlignment.CENTER),
@@ -171,14 +171,14 @@ class BibliografiaCrawlerApp:
                 ft.Text("⚙️ Níveis de Busca", weight=ft.FontWeight.BOLD, size=14),
                 self.nivel_selector,
                 ft.Text(
-                    "🔍 Cada livro é buscado com 6 variações de query • O nível define quantos PDFs diferentes testar",
+                    "� 32 queries × até 15 PDFs = 480 tentativas (moderado) | Extração avançada de links",
                     size=11,
                     color=ft.Colors.GREEN_700,
                     weight=ft.FontWeight.BOLD,
                     text_align=ft.TextAlign.CENTER
                 ),
                 ft.Text(
-                    "⏱️ Rápido: ~30s/livro • Moderado: ~60s/livro • Completo: ~90s/livro",
+                    "⏱️ Rápido: ~60s • Moderado: ~120s • Completo: busca exaustiva (pode levar vários minutos)",
                     size=10,
                     color=ft.Colors.BLUE_600,
                     italic=True,
@@ -479,15 +479,15 @@ class BibliografiaCrawlerApp:
         
         # Mapeia nível para quantidade de links
         niveis_info = {
-            "rapido": "2 links por busca",
-            "moderado": "4 links por busca",
-            "completo": "6 links por busca"
+            "rapido": "5 PDFs × 32 queries = 160 tentativas",
+            "moderado": "15 PDFs × 32 queries = 480 tentativas",
+            "completo": "TODOS os PDFs (busca exaustiva infinita)"
         }
-        info_nivel = niveis_info.get(nivel, "4 links")
+        info_nivel = niveis_info.get(nivel, "15 PDFs")
         
         # Mostra informação sobre otimizações
         self.mostrar_mensagem(
-            f"🔍 {len(lista_livros)} livros processados - {info_nivel} - 6 variações de query",
+            f"🎯 {len(lista_livros)} livros • {info_nivel} • 3 motores de busca",
             ft.Colors.BLUE_700
         )
         
