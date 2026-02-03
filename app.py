@@ -58,14 +58,6 @@ class BibliografiaCrawlerApp:
         self.resultados = {"sucessos": [], "falhas": []}
         self.mensagem_status = None
         
-        # FilePicker para salvar ZIP
-        try:
-            self.file_picker = ft.FilePicker(on_result=self.salvar_zip_resultado)
-            self.page.overlay.append(self.file_picker)
-            self.page.update()
-        except:
-            self.file_picker = None  # Fallback se FilePicker não disponível
-        
         # Registra limpeza de PDFs ao fechar o app
         atexit.register(self.limpar_downloads)
         
@@ -109,7 +101,7 @@ class BibliografiaCrawlerApp:
                         italic=True
                     ),
                     ft.Text(
-                        "✨ 3 motores de busca • Cache inteligente • Validação MD5 • Metadados PDF",
+                        "✨ 7 motores • 51 queries • Telegram • Validação 70% • Multiidioma",
                         size=10,
                         color=ft.Colors.GREEN_600,
                         weight=ft.FontWeight.W_500
@@ -479,15 +471,15 @@ class BibliografiaCrawlerApp:
         
         # Mapeia nível para quantidade de links
         niveis_info = {
-            "rapido": "5 PDFs × 32 queries = 160 tentativas",
-            "moderado": "15 PDFs × 32 queries = 480 tentativas",
-            "completo": "TODOS os PDFs (busca exaustiva infinita)"
+            "rapido": "5 PDFs × 51 queries = 255 tentativas",
+            "moderado": "15 PDFs × 51 queries = 765 tentativas",
+            "completo": "TODOS os PDFs × 51 queries (busca infinita)"
         }
         info_nivel = niveis_info.get(nivel, "15 PDFs")
         
         # Mostra informação sobre otimizações
         self.mostrar_mensagem(
-            f"🎯 {len(lista_livros)} livros • {info_nivel} • 3 motores de busca",
+            f"📡 {len(lista_livros)} livros • {info_nivel} • Inclui Telegram",
             ft.Colors.BLUE_700
         )
         
@@ -543,32 +535,19 @@ class BibliografiaCrawlerApp:
             self.mostrar_mensagem("❌ Nenhum PDF encontrado", ft.Colors.RED_700)
             return
         
-        # Tenta usar FilePicker se disponível
+        # Salva na pasta atual com timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if self.file_picker:
-            try:
-                self.file_picker.save_file(
-                    dialog_title="Salvar ZIP com PDFs",
-                    file_name=f"bibliografia_{timestamp}.zip",
-                    allowed_extensions=["zip"],
-                )
-                return
-            except:
-                pass
-        
-        # Fallback: salva na pasta atual
-        self.salvar_zip_fallback(timestamp, pdfs)
-    
-    def salvar_zip_fallback(self, timestamp: str, pdfs: list[str]):
-        """Salva ZIP na pasta atual se FilePicker falhar."""
         zip_path = f"bibliografia_{timestamp}.zip"
+        
         try:
+            # Cria o ZIP
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for pdf in pdfs:
                     pdf_path = os.path.join(DOWNLOAD_DIR, pdf)
                     zipf.write(pdf_path, pdf)
             
             caminho_completo = os.path.abspath(zip_path)
+            # Mostra mensagem de sucesso com caminho
             self.mostrar_mensagem(
                 f"✅ ZIP criado com {len(pdfs)} PDFs\n📁 {caminho_completo}", 
                 ft.Colors.GREEN_700
@@ -576,28 +555,6 @@ class BibliografiaCrawlerApp:
         except Exception as ex:
             self.mostrar_mensagem(f"❌ Erro ao criar ZIP: {ex}", ft.Colors.RED_700)
     
-    def salvar_zip_resultado(self, e: ft.FilePickerResultEvent):
-        """Callback quando usuário escolhe onde salvar o ZIP."""
-        if not e.path:
-            return
-        
-        # Cria ZIP no caminho escolhido
-        zip_path = e.path
-        if not zip_path.endswith('.zip'):
-            zip_path += '.zip'
-        
-        try:
-            pdfs = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith('.pdf')]
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for pdf in pdfs:
-                    pdf_path = os.path.join(DOWNLOAD_DIR, pdf)
-                    zipf.write(pdf_path, pdf)
-            
-            self.mostrar_mensagem(f"✅ ZIP salvo: {os.path.basename(zip_path)} ({len(pdfs)} arquivos)", ft.Colors.GREEN_700)
-        except Exception as ex:
-            self.mostrar_mensagem(f"❌ Erro ao criar ZIP: {ex}", ft.Colors.RED_700)
-
-
 def main(page: ft.Page):
     BibliografiaCrawlerApp(page)
 

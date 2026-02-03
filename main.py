@@ -69,6 +69,11 @@ async def encontrar_links_pdf(page, nivel: str = "moderado", motor: str = "bing"
     links = await page.evaluate("""() => {
         const allLinks = [];
         
+        // Verifica se a página está carregada
+        if (!document.body) {
+            return [];
+        }
+        
         // 1. Links diretos para PDF
         document.querySelectorAll('a').forEach(a => {
             if (a.href && a.href.match(/\\.pdf(\\?|#|$)/i)) {
@@ -85,11 +90,15 @@ async def encontrar_links_pdf(page, nivel: str = "moderado", motor: str = "bing"
         });
         
         // 3. Procura por URLs em texto (resultados de busca)
-        const pageText = document.body.innerText;
-        const urlPattern = /https?:\\/\\/[^\\s]+\\.pdf/gi;
-        const matches = pageText.matchAll(urlPattern);
-        for (const match of matches) {
-            allLinks.push(match[0]);
+        try {
+            const pageText = document.body ? document.body.innerText : '';
+            const urlPattern = /https?:\\/\\/[^\\s]+\\.pdf/gi;
+            const matches = pageText.matchAll(urlPattern);
+            for (const match of matches) {
+                allLinks.push(match[0]);
+            }
+        } catch (e) {
+            // Ignora erros na extração de texto
         }
         
         return allLinks.filter(href => href.startsWith('http'));
@@ -218,15 +227,22 @@ def validar_pdf(caminho: str, termo_busca: str = "") -> bool:
 async def baixar_pdf(page, url: str, download_path: str) -> bool:
     """Baixa o PDF via request direto do Playwright."""
     try:
-        response = await page.request.get(url, timeout=30000)
+        response = await page.request.get(url, timeout=60000)  # 60 segundos para arquivos grandes
         if response.ok:
             body = await response.body()
+            tamanho_mb = len(body) / (1024 * 1024)
+            
             with open(download_path, "wb") as f:
                 f.write(body)
+            
+            log.info("⬇️ Baixado: %.1f MB", tamanho_mb)
             return True
         log.warning("Resposta HTTP %s para: %s", response.status, url)
     except Exception as e:
-        log.error("Download falhou: %s", e)
+        if "Timeout" in str(e):
+            log.error("⏱️ Timeout ao baixar (arquivo muito grande): %s", url[:80])
+        else:
+            log.error("Download falhou: %s", str(e)[:200])
     return False
 
 
@@ -237,37 +253,44 @@ async def tentar_busca(page, query_str: str, download_path: str, termo_original:
         "bing": f"https://www.bing.com/search?q={quote_plus(query_str)}",
         "duckduckgo": f"https://duckduckgo.com/?q={quote_plus(query_str)}",
         "google": f"https://www.google.com/search?q={quote_plus(query_str)}",
+        "yandex": f"https://yandex.com/search/?text={quote_plus(query_str)}",
+        "brave": f"https://search.brave.com/search?q={quote_plus(query_str)}",
+        "startpage": f"https://www.startpage.com/do/search?q={quote_plus(query_str)}",
+        "qwant": f"https://www.qwant.com/?q={quote_plus(query_str)}",
     }
     
     search_url = motores.get(motor, motores["bing"])
 
     try:
-        await page.goto(search_url, wait_until="load", timeout=20000)
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
         await asyncio.sleep(random.uniform(2, 4))
+        
+        # Aguarda corpo da página estar disponível
+        await page.wait_for_selector("body", timeout=5000)
     except Exception as e:
-        log.error("Erro ao acessar motor de busca %s: %s", motor, e)
+        log.error("Erro ao acessar motor de busca %s: %s", motor, str(e)[:100])
         return False
 
     links_pdf = await encontrar_links_pdf(page, nivel, motor)
     if not links_pdf:
-        log.warning("❌ Nenhum link PDF encontrado com motor %s", motor)
+        log.debug("🚫 Nenhum link PDF encontrado com motor %s", motor)
         return False
 
     log.info("✅ Encontrados %d links únicos no %s (testando até %d)", 
              len(links_pdf), motor, NIVEIS_BUSCA.get(nivel, 6))
 
     for i, url_pdf in enumerate(links_pdf):
-        log.info("Tentativa %d/%d: %s", i + 1, len(links_pdf), url_pdf[:80])
+        log.info("🔍 Tentativa %d/%d: %s", i + 1, len(links_pdf), url_pdf[:100])
 
         if not await baixar_pdf(page, url_pdf, download_path):
-            await asyncio.sleep(random.uniform(1, 2))  # Evita rate limiting
+            await asyncio.sleep(random.uniform(0.5, 1))  # Delay menor entre falhas
             continue
 
         if validar_pdf(download_path, termo_original):
             return True
 
         os.remove(download_path)
-        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await asyncio.sleep(random.uniform(0.3, 0.8))  # Delay menor
 
     return False
 
@@ -280,48 +303,69 @@ def gerar_queries_inteligentes(termo: str) -> list[tuple[str, str]]:
     titulo = " ".join(palavras[:-2]) if len(palavras) > 2 else termo
     
     queries_base = [
-        # Queries exatas
+        # Queries exatas - distribuídas entre motores
         (f'"{termo}" filetype:pdf', "bing"),
         (f'"{termo}" pdf', "google"),
         (f'"{termo}" pdf download', "duckduckgo"),
+        (f'"{termo}" книга pdf', "yandex"),  # Russo: "livro"
+        (f'"{termo}" filetype:pdf', "brave"),
+        
+        # Telegram - Links públicos indexados
+        (f'{termo} site:t.me pdf', "google"),
+        (f'{termo} telegram pdf download', "bing"),
+        (f'{termo} pdf t.me', "duckduckgo"),
+        (f'"{termo}" site:t.me', "google"),
+        (f'{termo} grupo telegram pdf', "bing"),
+        (f'{termo} canal telegram livro pdf', "google"),
         
         # Queries com variações
         (f"livro {termo} filetype:pdf", "google"),
         (f"{termo} pdf completo", "duckduckgo"),
         (f"download pdf {termo}", "bing"),
-        (f"{termo} pdf gratis download", "google"),
+        (f"{termo} pdf gratis download", "startpage"),
         (f"baixar {termo} pdf", "bing"),
         (f"ebook {termo} pdf", "duckduckgo"),
         (f"{termo} pdf portugues", "google"),
-        (f"{termo} livro pdf download", "bing"),
-        (f"pdf {termo} completo gratis", "duckduckgo"),
+        (f"{termo} livro pdf download", "qwant"),
+        (f"pdf {termo} completo gratis", "brave"),
         (f"{termo} book pdf", "google"),
         (f"free pdf {termo}", "bing"),
         
         # Queries específicas
         (f"{termo} pdf online", "google"),
         (f"{termo} epub pdf", "duckduckgo"),
-        (f"download gratis {termo} pdf", "bing"),
-        (f"{termo} pdf ler online", "google"),
+        (f"download gratis {termo} pdf", "yandex"),
+        (f"{termo} pdf ler online", "startpage"),
         
-        # Sites específicos
+        # Sites específicos - distribuídos
         (f"{termo} site:archive.org", "google"),
         (f"{termo} pdf site:academia.edu", "google"),
-        (f"{termo} pdf site:researchgate.net", "google"),
-        (f"{termo} site:scribd.com", "google"),
-        (f"{termo} pdf site:z-lib.org", "google"),
-        (f"{termo} pdf site:libgen", "google"),
-        (f"{termo} site:pdfdrive.com", "google"),
+        (f"{termo} pdf site:researchgate.net", "startpage"),
+        (f"{termo} site:scribd.com", "bing"),
+        (f"{termo} pdf site:z-lib.org", "brave"),
+        (f"{termo} pdf site:libgen", "yandex"),
+        (f"{termo} site:pdfdrive.com", "qwant"),
+        (f"{termo} pdf site:bookfi.net", "duckduckgo"),
+        (f"{termo} site:epdf.pub", "google"),
+        (f"{termo} pdf site:1lib.domains", "brave"),
+        
+        # Redes sociais e fóruns
+        (f"{termo} pdf site:reddit.com", "google"),
+        (f"{termo} livro pdf site:facebook.com", "bing"),
         
         # Queries com autor separado (se detectado)
         (f'{autor} "{titulo}" pdf', "google") if autor else (f"{termo} pdf", "google"),
         (f'livro {titulo} {autor} pdf', "bing") if autor else (f"livro {termo} pdf", "bing"),
+        (f'{autor} {titulo} filetype:pdf', "startpage") if autor else (f"{termo} filetype:pdf", "startpage"),
         
-        # Queries alternativas
+        # Queries alternativas - diversos motores
         (f"{termo.replace(' ', '+')} filetype:pdf", "bing"),
         (f"{termo} pdf free download", "duckduckgo"),
         (f"{termo} pdf full book", "google"),
-        (f"{termo} complete pdf", "duckduckgo"),
+        (f"{termo} complete pdf", "brave"),
+        (f"{termo} полный pdf", "yandex"),  # Russo: "completo"
+        (f"{termo} libro completo pdf", "qwant"),  # Espanhol
+        (f"{termo} livre complet pdf", "startpage"),  # Francês
     ]
     
     return queries_base
