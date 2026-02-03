@@ -5,13 +5,28 @@ echo "🚀 BIBLIOGRAFIA CRAWLER - BUILD MULTIPLATAFORMA"
 echo "================================================"
 echo ""
 
-# Menu de seleção
-echo "Selecione a plataforma:"
-echo "  1) Android APK"
-echo "  2) Android AAB (Google Play)"
-echo "  3) Windows EXE"
-echo "  4) Linux"
-echo "  5) Todas as plataformas"
+# Detecta plataforma atual
+if grep -qEi "(Microsoft|WSL)" /proc/version &> /dev/null 2>&1; then
+    PLATAFORMA="WSL"
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    PLATAFORMA="Linux"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    PLATAFORMA="macOS"
+else
+    PLATAFORMA="Desconhecida"
+fi
+
+echo "📍 Plataforma detectada: $PLATAFORMA"
+echo ""
+🌐 Construindo versão WEB..."
+        chmod +x build_web.sh
+        ./build_web.sh
+        ;;
+    2)
+        echo ""
+        echo "🤖 Construindo Android APK..."
+        chmod +x build_android.sh
+        ./build_android.shormas"
 echo ""
 read -p "Opção [1-5]: " opcao
 
@@ -43,14 +58,14 @@ case $opcao in
         echo ""
         echo "🌍 Construindo para TODAS as plataformas..."
         echo ""
+        web.sh build_android.sh build_windows.sh build_linux.sh
         
-        chmod +x build_android.sh build_windows.sh build_linux.sh
-        
-        echo "1/4 - Android APK..."
-        ./build_android.sh
+        echo "1/4 - Versão WEB..."
+        ./build_web.sh
         
         echo ""
-        echo "2/4 - Android AAB..."
+        echo "2/4 - Android APK..."
+        ./build_android.shAB..."
         uv run flet build aab
         
         echo ""
