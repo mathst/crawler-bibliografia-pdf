@@ -1,0 +1,33 @@
+# Exemplo de Lista de Livros - Ciência da Computação
+
+## Lista Pequena (Teste Rápido - 3 livros)
+SZWARCFITER, Jayme L.; MARKENZON, Lilian. Estruturas de Dados e seus Algoritmos
+TANENBAUM, Andrew S. Redes de computadores
+SILBERSCHATZ, A. Fundamentos de Sistemas Operacionais
+
+## Lista Média (Uso Geral - 8 livros)
+SZWARCFITER, Jayme L.; MARKENZON, Lilian. Estruturas de Dados e seus Algoritmos
+ELMASRI, R; NAVATHE, S. B. Sistemas de Banco de Dados
+DATE, C. J. Introdução a Sistemas de Bancos de Dados
+TANENBAUM, Andrew S. Redes de computadores
+KUROSE, James F. Redes de Computadores e a internet
+SILBERSCHATZ, A. Fundamentos de Sistemas Operacionais
+STALLINGS, William. Criptografia e segurança de redes
+RUSSELL, Stuart J.; NORVIG, Peter. Inteligência artificial
+
+## Lista Completa (15 livros)
+SZWARCFITER, Jayme L.; MARKENZON, Lilian. Estruturas de Dados e seus Algoritmos
+BORIN, Vinicius P. Estrutura de Dados
+ELMASRI, R; NAVATHE, S. B. Sistemas de Banco de Dados
+DATE, C. J. Introdução a Sistemas de Bancos de Dados
+MACHADO, Felipe N. R. Tecnologia e Projeto de Data Warehouse
+MARQUESONE, Rosangela. Big Data: Técnicas e tecnologias para extração de valor dos dados
+BARBIERI, Carlos. BI2 - Business Intelligence Modelagem & Qualidade
+TANENBAUM, Andrew S. Redes de computadores
+KUROSE, James F. Redes de Computadores e a internet
+SILBERSCHATZ, A. Fundamentos de Sistemas Operacionais
+WARD, Bryan. Como o Linux Funciona: O que todo superusuário deveria saber
+STALLINGS, William. Criptografia e segurança de redes
+HELDMAN, Kim. Gerência de Projetos. Guia para o exame oficial do PMI
+RUSSELL, Stuart J.; NORVIG, Peter. Inteligência artificial
+FERNANDES, Aguinaldo A. Implantando a Governança de TI

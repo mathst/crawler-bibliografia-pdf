@@ -3,6 +3,7 @@ import random
 import os
 import logging
 from urllib.parse import quote_plus
+from typing import Callable, Optional
 from playwright.async_api import async_playwright
 from playwright_stealth.stealth import Stealth
 from fake_useragent import UserAgent
@@ -17,27 +18,15 @@ log = logging.getLogger(__name__)
 UA = UserAgent()
 DOWNLOAD_DIR = "bibliografia_pdf"
 MIN_PAGINAS = 50
-LISTA_LIVROS = [
-    # Estruturas de Dados
-    "SZWARCFITER, Jayme L.; MARKENZON, Lilian. Estruturas de Dados e seus Algoritmos",
-    "BORIN, Vinicius P. Estrutura de Dados",
-    # Banco de Dados e Big Data
-    "ELMASRI, R; NAVATHE, S. B. Sistemas de Banco de Dados",
-    "DATE, C. J. Introdução a Sistemas de Bancos de Dados",
-    "MACHADO, Felipe N. R. Tecnologia e Projeto de Data Warehouse",
-    "MARQUESONE, Rosangela. Big Data: Técnicas e tecnologias para extração de valor dos dados",
-    "BARBIERI, Carlos. BI2 - Business Intelligence Modelagem & Qualidade",
-    # Infraestrutura, SO e Redes
-    "TANENBAUM, Andrew S. Redes de computadores",
-    "KUROSE, James F. Redes de Computadores e a internet",
-    "SILBERSCHATZ, A. Fundamentos de Sistemas Operacionais",
-    "WARD, Bryan. Como o Linux Funciona: O que todo superusuário deveria saber",
-    "STALLINGS, William. Criptografia e segurança de redes",
-    # Gestão e Inteligência Artificial
-    "HELDMAN, Kim. Gerência de Projetos. Guia para o exame oficial do PMI",
-    "RUSSELL, Stuart J.; NORVIG, Peter. Inteligência artificial",
-    "FERNANDES, Aguinaldo A. Implantando a Governança de TI",
-]
+
+# Níveis de busca: define quantos links PDF tentar
+NIVEIS_BUSCA = {
+    "rapido": 2,      # Apenas os 2 primeiros PDFs
+    "moderado": 4,    # Até 4 PDFs
+    "completo": 6,    # Até 6 PDFs
+}
+
+LISTA_LIVROS_PADRAO = []
 
 
 async def configurar_navegador(p):
@@ -53,7 +42,7 @@ async def configurar_navegador(p):
     return browser, page
 
 
-async def encontrar_links_pdf(page) -> list[str]:
+async def encontrar_links_pdf(page, nivel: str = "moderado") -> list[str]:
     """Extrai todos os links PDF únicos dos resultados do Bing."""
     links = await page.evaluate("""() => {
         return Array.from(document.querySelectorAll('a'))
@@ -68,7 +57,10 @@ async def encontrar_links_pdf(page) -> list[str]:
         if href not in seen:
             seen.add(href)
             unicos.append(href)
-    return unicos
+    
+    # Limita quantidade de links baseado no nível
+    max_links = NIVEIS_BUSCA.get(nivel, 4)
+    return unicos[:max_links]
 
 
 def validar_pdf(caminho: str) -> bool:
@@ -102,14 +94,14 @@ async def baixar_pdf(page, url: str, download_path: str) -> bool:
     return False
 
 
-async def tentar_busca(page, query_str: str, download_path: str) -> bool:
+async def tentar_busca(page, query_str: str, download_path: str, nivel: str = "moderado") -> bool:
     """Executa uma busca e tenta baixar um PDF válido dos resultados."""
     search_url = f"https://www.bing.com/search?q={quote_plus(query_str)}"
 
     await page.goto(search_url, wait_until="load", timeout=20000)
     await asyncio.sleep(random.uniform(2, 4))
 
-    links_pdf = await encontrar_links_pdf(page)
+    links_pdf = await encontrar_links_pdf(page, nivel)
     if not links_pdf:
         return False
 
@@ -127,32 +119,56 @@ async def tentar_busca(page, query_str: str, download_path: str) -> bool:
     return False
 
 
-async def buscar_e_baixar(page, termo: str) -> bool:
+async def buscar_e_baixar(
+    page, 
+    termo: str, 
+    nivel: str = "moderado",
+    callback_progresso: Optional[Callable[[str, str], None]] = None
+) -> bool:
     """Busca e baixa um PDF válido. Retorna True se conseguiu."""
     nome_arquivo = f"{termo[:50].replace(' ', '_').replace(':', '')}.pdf"
     download_path = os.path.join(DOWNLOAD_DIR, nome_arquivo)
 
+    if callback_progresso:
+        callback_progresso(termo, "verificando")
+
     if os.path.exists(download_path) and validar_pdf(download_path):
         log.info("Já baixado: %s", nome_arquivo)
+        if callback_progresso:
+            callback_progresso(termo, "sucesso")
         return True
 
+    # Queries otimizadas com palavras-chave variadas
     queries = [
+        f'"{termo}" filetype:pdf',
         f"livro {termo} filetype:pdf",
-        f"pdf {termo} filetype:pdf",
+        f"download pdf {termo}",
+        f"{termo} pdf gratis download",
+        f"baixar {termo} pdf",
+        f"ebook {termo} pdf",
     ]
 
     try:
         for q in queries:
             log.info("Buscando: %s", q)
-            if await tentar_busca(page, q, download_path):
+            if callback_progresso:
+                callback_progresso(termo, "buscando")
+            
+            if await tentar_busca(page, q, download_path, nivel):
                 log.info("Download concluído: %s", nome_arquivo)
+                if callback_progresso:
+                    callback_progresso(termo, "sucesso")
                 return True
 
         log.warning("Nenhum PDF válido (>%d páginas) para: %s", MIN_PAGINAS, termo)
+        if callback_progresso:
+            callback_progresso(termo, "falhou")
         return False
 
     except Exception as e:
         log.error("Erro ao buscar '%s': %s", termo, e)
+        if callback_progresso:
+            callback_progresso(termo, "erro")
         return False
 
 
@@ -164,8 +180,8 @@ async def main():
         falhas = []
 
         try:
-            for livro in LISTA_LIVROS:
-                sucesso = await buscar_e_baixar(page, livro)
+            for livro in LISTA_LIVROS_PADRAO:
+                sucesso = await buscar_e_baixar(page, livro, nivel="moderado")
                 if not sucesso:
                     falhas.append(livro)
                 await asyncio.sleep(random.uniform(5, 10))
@@ -174,7 +190,7 @@ async def main():
             if falhas:
                 log.info("=== Retry: %d livros falharam, tentando novamente ===", len(falhas))
                 for livro in falhas:
-                    await buscar_e_baixar(page, livro)
+                    await buscar_e_baixar(page, livro, nivel="moderado")
                     await asyncio.sleep(random.uniform(5, 10))
 
         finally:
@@ -182,11 +198,60 @@ async def main():
 
     # Relatório final
     baixados = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".pdf")]
-    log.info("=== Resultado: %d/%d PDFs baixados ===", len(baixados), len(LISTA_LIVROS))
+    log.info("=== Resultado: %d/%d PDFs baixados ===", len(baixados), len(LISTA_LIVROS_PADRAO))
     if falhas:
         log.warning("Livros sem PDF válido:")
         for f in falhas:
             log.warning("  - %s", f)
+
+
+class CrawlerBibliografia:
+    """Classe para gerenciar busca e download de bibliografia."""
+    
+    def __init__(self, callback_progresso: Optional[Callable[[str, str], None]] = None):
+        self.callback_progresso = callback_progresso
+        self.sucessos = []
+        self.falhas = []
+        self.cancelar = False
+        
+    async def executar(self, lista_livros: list[str], nivel: str = "moderado"):
+        """Executa o crawler para uma lista de livros."""
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        self.sucessos = []
+        self.falhas = []
+        
+        async with async_playwright() as p:
+            browser, page = await configurar_navegador(p)
+            
+            try:
+                for livro in lista_livros:
+                    # Verifica se foi cancelado
+                    if self.cancelar:
+                        log.warning("Busca cancelada pelo usuário")
+                        break
+                    
+                    sucesso = await buscar_e_baixar(
+                        page, 
+                        livro, 
+                        nivel=nivel,
+                        callback_progresso=self.callback_progresso
+                    )
+                    
+                    if sucesso:
+                        self.sucessos.append(livro)
+                    else:
+                        self.falhas.append(livro)
+                    
+                    await asyncio.sleep(random.uniform(3, 6))
+                
+            finally:
+                await browser.close()
+        
+        return {
+            "sucessos": self.sucessos,
+            "falhas": self.falhas,
+            "total": len(lista_livros)
+        }
 
 
 if __name__ == "__main__":
